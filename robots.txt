@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://davizzinn.github.io/sitemap.xml
+Sitemap: https://davizzinn.github.io/daviddevport/sitemap.xml
