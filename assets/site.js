@@ -130,7 +130,8 @@
   function updateStep(ops) {
     let i = 0;
     ops.forEach((o, k) => { if (o > ops[i]) i = k; });
-    if (i === sc.step) return;
+    // no vão entre duas camadas nenhuma está em destaque: o rótulo anterior continua, sem piscar
+    if (i === sc.step || (ops[i] <= 0 && sc.step >= 0)) return;
     sc.step = i;
     hudT.textContent = STEP_LABEL[i];
     replay(hudT, 'swap');
@@ -226,11 +227,37 @@
     builtFor = key;
     buildLoop();
   }
+  // os instantes do ciclo em que o rótulo ou os tracinhos mudam, calculados uma vez (com precisão de 1ms):
+  // o rótulo troca exatamente junto com a cena, e o script só acorda nesses momentos
+  const stepKey = ms => { const S = sceneAt(loopP(ms)); let i = 0; S.ops.forEach((o, k) => { if (o > S.ops[i]) i = k; }); return (S.ops[i] > 0 ? i : 9) * 10 + S.n; };
+  let marks = null;
+  function stepMarks() {
+    marks = [];
+    let t = 0, prev = stepKey(0);
+    // anda de 10 em 10ms; ao achar uma troca, crava o instante e recomeça dali (duas trocas podem estar coladas)
+    while (t < CYCLE - 1) {
+      const nt = Math.min(t + 10, CYCLE - 1);
+      if (stepKey(nt) === prev) { t = nt; continue; }
+      let lo = t, hi = nt;
+      while (hi - lo > 0.5) { const mid = (lo + hi) / 2; if (stepKey(mid) === prev) lo = mid; else hi = mid; }
+      marks.push(hi);
+      prev = stepKey(hi);
+      t = hi;
+    }
+  }
   function stepWatch() {
+    clearTimeout(stepTimer);
+    stepTimer = null;
     if (!heroAnims.length) return;
-    const S = sceneAt(loopP(heroAnims[0].currentTime || 0));
+    const t = (heroAnims[0].currentTime || 0) % CYCLE;
+    const S = sceneAt(loopP(t));
     updateStep(S.ops);
     if (S.n !== sc.n) { hudTicks.forEach((tk, i) => tk.classList.toggle('on', i < S.n)); sc.n = S.n; }
+    if (!heroPlaying) return;
+    if (!marks) stepMarks();
+    if (!marks.length) return;
+    const next = marks.find(m => m > t + 1);
+    stepTimer = setTimeout(stepWatch, Math.max(16, (next !== undefined ? next : marks[0] + CYCLE) - t + 4));
   }
   // o relógio só anda com o topo na tela e a aba aberta, e continua de onde parou
   function loopRun() {
@@ -238,14 +265,13 @@
     heroPlaying = true;
     heroAnims.forEach(a => { a.currentTime = heroTime; a.play(); });
     stepWatch();
-    stepTimer = setInterval(stepWatch, 100);
   }
   function loopHalt() {
     if (!heroPlaying) return;
     heroPlaying = false;
     heroTime = heroAnims[0].currentTime || 0;
     heroAnims.forEach(a => { a.pause(); a.currentTime = heroTime; });
-    clearInterval(stepTimer);
+    clearTimeout(stepTimer);
     stepTimer = null;
   }
   // o mouse (ou o dedo) inclina a cena de leve: só um elemento muda, sem recalcular as camadas
