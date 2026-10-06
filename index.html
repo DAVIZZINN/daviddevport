@@ -64,7 +64,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400..700&family=JetBrains+Mono:wght@500&family=Unbounded:wght@500;700&display=swap">
-<link rel="stylesheet" href="assets/site.css">
+<link rel="stylesheet" href="assets/site.css?v=7">
 <script>document.documentElement.classList.add('js')</script>
 </head>
 <body>
@@ -99,12 +99,8 @@
     <div class="aur aur-a"></div>
     <div class="aur aur-b"></div>
     <div class="aur aur-c"></div>
-    <div class="aur aur-d"></div>
   </div>
-  <div class="galaxy" id="galaxy"><i class="gx-glow"></i><i class="gx-dust"></i></div>
-  <div class="stars s-far"><i class="st a"></i><i class="st b"></i></div>
-  <div class="stars s-mid"><i class="st a"></i><i class="st b"></i></div>
-  <div class="stars s-near"><i class="st a"></i><i class="st b"></i><i class="st streak"></i></div>
+  <div class="galaxy" id="galaxy"><i class="gx-glow"></i></div>
   <canvas class="sky" id="skycv"></canvas>
   <i class="meteor" id="meteor"></i>
   <div class="amb-spot" id="spot"></div>
@@ -148,6 +144,7 @@
   <div class="stage">
     <div class="scene" aria-hidden="true" inert>
       <div class="float">
+        <div class="ptilt" id="ptilt">
         <div class="stack" id="stack">
 
           <div class="layer l-code" data-i="0">
@@ -222,6 +219,7 @@
             <div class="anno"><span>04</span> conteúdo</div>
           </div>
 
+        </div>
         </div>
       </div>
     </div>
@@ -552,6 +550,6 @@
   </div>
 </div>
 
-<script src="assets/site.js" defer></script>
+<script src="assets/site.js?v=7" defer></script>
 </body>
 </html>

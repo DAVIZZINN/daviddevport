@@ -10,6 +10,21 @@
   function rng(seed) { let s = seed >>> 0; return () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296; }
 
   const root = document.documentElement;
+  // tamanho da janela lido só quando ela muda: no celular, perguntar isso a cada quadro obriga a recalcular a página
+  let VW = innerWidth, VH = innerHeight;
+  addEventListener('resize', () => { VW = innerWidth; VH = innerHeight; });
+  // trabalho que pode esperar: roda quando o navegador estiver livre (ou em até 1,5s), em tarefas separadas
+  const idle = fn => ('requestIdleCallback' in window ? requestIdleCallback(fn, { timeout: 1500 }) : setTimeout(fn, 60));
+  // reinicia uma animação de CSS sem obrigar o navegador a recalcular a página inteira na hora
+  function replay(el, cls) {
+    if (!el.classList.contains(cls)) { el.classList.add(cls); return; }
+    const list = el.getAnimations ? el.getAnimations({ subtree: true }).filter(a => a.animationName) : [];
+    if (list.length) { list.forEach(a => { a.cancel(); a.play(); }); return; }
+    el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls);
+  }
+  // a rolagem é lida no evento de scroll, no começo do quadro; o resto do código usa este número e nunca pergunta de novo
+  let scrollPos = scrollY, pageMax = 0;
+  addEventListener('scroll', () => { scrollPos = scrollY; }, { passive: true });
   /* ---------- animações: ligadas para todo mundo; quem preferir menos movimento desliga no rodapé ---------- */
   let motionOff = false;
   try { motionOff = localStorage.getItem('dd-motion') === 'off'; } catch (e) { /* sem armazenamento: fica o padrão */ }
@@ -39,7 +54,7 @@
 
   /* ---------- ponteiro: mouse, caneta e toque ---------- */
   const FINE = matchMedia('(hover: hover) and (pointer: fine)');
-  const ptr = { tx: innerWidth / 2, ty: innerHeight * 0.3, x: innerWidth / 2, y: innerHeight * 0.3, cx: 0, cy: 0, tcx: 0, tcy: 0, drag: 0, dragging: false, raf: null, last: 0 };
+  const ptr = { tx: VW / 2, ty: VH * 0.3, x: VW / 2, y: VH * 0.3, cx: 0, cy: 0, tcx: 0, tcy: 0, drag: 0, dragging: false, raf: null, last: 0 };
   const smooth = { on: false };
 
   /* ---------- hero: as camadas se montam sozinhas, em loop, como um vídeo ---------- */
@@ -56,9 +71,8 @@
 
   let W = 0, G = 0, shiftX = 0;
   const STACKED = matchMedia('(orientation: portrait) and (max-width: 1100px), (max-width: 600px)');
-  let scrubOn = false, heroOn = true, shown = 0;
-  let loopRaf = null, loopClock = 0, loopLast = 0;
-  const sc = { stack: '', type: -1, live: -1, n: -1, step: -1, cue: -1, L: layers.map(() => ({ t: '', o: -1, hi: -1, ao: -1 })) };
+  let scrubOn = false, heroOn = true;
+  const sc = { n: -1, step: -1, cue: -1 };
 
   // no celular a pilha explodida começa um pouco à direita para os rótulos caberem, e volta ao centro ao assentar
   function measure() { W = stack.offsetWidth; G = W * 0.25; shiftX = STACKED.matches ? W * 0.09 : 0; }
@@ -78,7 +92,9 @@
     return prev;
   }
 
-  function renderScene(p, ops) {
+  // a cena num instante p do ciclo (0 = camadas separadas, 1 = site pronto)
+  function sceneAt(p) {
+    const ops = BEATS.map(b => bandOpacity(b, p));
     const land = [1, sstep(0.38, 0.50, p), sstep(0.47, 0.58, p), sstep(0.62, 0.75, p)];
     const r = sstep(0.78, 0.95, p);
     const avg = (land[1] + land[2] + land[3]) / 3;
@@ -87,10 +103,6 @@
     const s = lerp(lerp(0.78, 0.88, avg), 1, r);
     const zs = land.map((l, i) => i * G * (1 - l) + i * 1.2);
     const c = zs[3] / 2;
-
-    const t = `translate3d(${(shiftX * (1 - r)).toFixed(2)}px,0,0) rotateX(${(-ptr.cy * 4).toFixed(3)}deg) rotateY(${(ptr.cx * 5).toFixed(3)}deg) scale(${s.toFixed(4)}) rotateX(${rx.toFixed(3)}deg) rotateZ(${rz.toFixed(3)}deg) translateZ(${(-c).toFixed(2)}px)`;
-    if (t !== sc.stack) { stack.style.transform = t; sc.stack = t; }
-
     const [, o2, o3, o4] = ops;
     const endFade = 1 - sstep(0.9, 0.99, p);
     const annoBase = 1 - sstep(0.74, 0.84, p);
@@ -103,40 +115,25 @@
     const hi = [o2, o3, o3, o4];
     // só a camada do topo da pilha mantém o rótulo: ele some quando outra camada pousa em cima
     const free = [1 - land[1], 1 - land[2], 1 - land[3], 1 - sstep(0.565, 0.605, p)];
-
-    layers.forEach((el, i) => {
-      const L = sc.L[i];
-      const lt = `translateZ(${zs[i].toFixed(2)}px)`;
-      if (lt !== L.t) { el.style.transform = lt; L.t = lt; }
-      const o = opa[i];
-      if (Math.abs(o - L.o) > 0.004 || (o !== L.o && (o === 0 || o === 1))) { el.style.opacity = o.toFixed(3); L.o = o; }
-      L.hi = setVar(el, '--hi', hi[i], L.hi, 0.01);
-      L.ao = setVar(el, '--ao', annoBase * free[i] * (0.7 + 0.3 * hi[i]), L.ao, 0.01);
-    });
-
-    sc.type = setVar(stack, '--type', lerp(0.32, 1, sstep(0.18, 0.34, p)), sc.type, 0.004);
-    sc.live = setVar(stack, '--live', sstep(0.9, 0.98, p), sc.live, 0.01);
-
-    const n = p < 0.19 ? 0 : 1 + (land[1] > 0.5) + (land[2] > 0.5) + (land[3] > 0.5);
-    if (n !== sc.n) { hudTicks.forEach((tk, i) => tk.classList.toggle('on', i < n)); sc.n = n; }
+    return {
+      ops, opa, hi, zs,
+      stack: [shiftX * (1 - r), s, rx, rz, -c],
+      ao: hi.map((h, i) => annoBase * free[i] * (0.7 + 0.3 * h)),
+      type: lerp(0.32, 1, sstep(0.18, 0.34, p)),
+      live: sstep(0.9, 0.98, p),
+      n: p < 0.19 ? 0 : 1 + (land[1] > 0.5) + (land[2] > 0.5) + (land[3] > 0.5)
+    };
   }
 
   // o rótulo embaixo da cena conta em qual camada o site está
+  hudT.addEventListener('animationend', () => hudT.classList.remove('swap'));
   function updateStep(ops) {
     let i = 0;
     ops.forEach((o, k) => { if (o > ops[i]) i = k; });
     if (i === sc.step) return;
     sc.step = i;
-    hudT.classList.remove('swap');
-    void hudT.offsetWidth;
     hudT.textContent = STEP_LABEL[i];
-    hudT.classList.add('swap');
-  }
-
-  function frame(p) {
-    const ops = BEATS.map(b => bandOpacity(b, p));
-    renderScene(p, ops);
-    updateStep(ops);
+    replay(hudT, 'swap');
   }
 
   // um ciclo de 14,6 segundos com uma pausa em cada camada, para dar tempo de ler o rótulo:
@@ -155,32 +152,108 @@
     }
     return 0;
   }
-  function loopTick(now) {
-    const dt = Math.min(100, now - (loopLast || now));
-    loopLast = now;
-    loopClock += dt;
-    shown = loopP(loopClock);
-    frame(shown);
-    loopRaf = requestAnimationFrame(loopTick);
+
+  // o ciclo inteiro é calculado uma vez e entregue ao navegador como animação nativa:
+  // quem desenha o movimento é a placa de vídeo, e o processador fica livre para a rolagem e o resto da página
+  const ptilt = $('#ptilt');
+  const annos = layers.map(l => $('.anno', l));
+  const codeLines = $$('.cl', stack);
+  const onair = $('.onair', stack);
+  let heroAnims = [], heroFixed = [], heroTime = 0, heroPlaying = false, stepTimer = null, builtFor = '';
+  // navegador antigo que não anima o brilho separado: a cena roda igual, só sem o contorno aceso
+  const PSEUDO_OK = typeof KeyframeEffect !== 'undefined' && 'pseudoElement' in KeyframeEffect.prototype;
+  // um trecho cabe numa reta se nenhum ponto do meio se afasta dela mais que a tolerância (menos de meio pixel na tela)
+  function fits(vals, i, j, tol) {
+    const a = vals[i], b = vals[j];
+    for (let k = i + 1; k < j; k++) {
+      const t = (k - i) / (j - i), v = vals[k];
+      for (let d = 0; d < tol.length; d++) if (Math.abs(a[d] + (b[d] - a[d]) * t - v[d]) > tol[d]) return false;
+    }
+    return true;
+  }
+  // de centenas de amostras, ficam só os pontos onde o movimento muda de direção ou de ritmo
+  function thin(vals, tol) {
+    const keep = [0];
+    for (let i = 0; i < vals.length - 1;) {
+      let j = i + 1;
+      while (j + 1 < vals.length && fits(vals, i, j + 1, tol)) j++;
+      keep.push(j);
+      i = j;
+    }
+    return keep;
+  }
+  const px = v => v.toFixed(2) + 'px';
+  function buildLoop() {
+    if (heroAnims.length) heroTime = heroAnims[0].currentTime || 0;
+    heroAnims.forEach(a => a.cancel());
+    heroAnims = [];
+    heroFixed.forEach(el => { el.style.opacity = ''; });
+    heroFixed = [];
+    const N = Math.round(CYCLE / 50);
+    const S = [];
+    for (let k = 0; k <= N; k++) S.push(sceneAt(loopP(k * CYCLE / N)));
+    const opt = { duration: CYCLE, iterations: Infinity };
+    const O = [0.004];
+    // uma trilha: números por amostra, poucos pontos, quadros-chave; trilha que nunca muda nem vira animação
+    const track = (el, get, tol, toKf, extra) => {
+      if (!el) return;
+      const vals = S.map(get);
+      const keep = thin(vals, tol);
+      if (vals.every(v => v.every((x, d) => Math.abs(x - vals[0][d]) <= tol[d]))) {
+        if (!extra && toKf === opac) { el.style.opacity = vals[0][0].toFixed(3); heroFixed.push(el); }
+        return;
+      }
+      const kf = keep.map(k => Object.assign({ offset: k / N }, toKf(vals[k])));
+      heroAnims.push(el.animate(kf, extra ? Object.assign({}, opt, extra) : opt));
+    };
+    const opac = v => ({ opacity: +v[0].toFixed(3) });
+    track(stack, x => x.stack, [0.2, 0.0004, 0.04, 0.04, 0.2],
+      v => ({ transform: `translate3d(${px(v[0])},0,0) scale(${v[1].toFixed(4)}) rotateX(${v[2].toFixed(3)}deg) rotateZ(${v[3].toFixed(3)}deg) translateZ(${px(v[4])})` }));
+    const lineI = codeLines.map((el, i) => +el.style.getPropertyValue('--i') || i);
+    layers.forEach((el, i) => {
+      track(el, x => [x.zs[i], x.opa[i]], [0.2, 0.004], v => ({ transform: `translateZ(${px(v[0])})`, opacity: +v[1].toFixed(3) }));
+      if (PSEUDO_OK) track(el, x => [x.hi[i]], O, opac, { pseudoElement: '::after' });
+      track(annos[i], x => [x.ao[i]], O, opac);
+    });
+    codeLines.forEach((el, i) => track(el, x => [clamp(x.type * 10 - lineI[i], 0.07, 1)], O, opac));
+    track(onair, x => [x.live], O, opac);
+    heroAnims.forEach(a => { a.currentTime = heroTime; if (!heroPlaying) a.pause(); });
+  }
+  // só refaz as contas quando o tamanho da cena muda de verdade (girar a tela, redimensionar a janela)
+  function buildScene() {
+    const key = W.toFixed(1) + '|' + shiftX.toFixed(1);
+    if (key === builtFor && heroAnims.length) return;
+    builtFor = key;
+    buildLoop();
+  }
+  function stepWatch() {
+    if (!heroAnims.length) return;
+    const S = sceneAt(loopP(heroAnims[0].currentTime || 0));
+    updateStep(S.ops);
+    if (S.n !== sc.n) { hudTicks.forEach((tk, i) => tk.classList.toggle('on', i < S.n)); sc.n = S.n; }
   }
   // o relógio só anda com o topo na tela e a aba aberta, e continua de onde parou
-  function loopRun() { if (!loopRaf && scrubOn && heroOn && !document.hidden) { loopLast = 0; loopRaf = requestAnimationFrame(loopTick); } }
-  function loopHalt() { if (loopRaf) { cancelAnimationFrame(loopRaf); loopRaf = null; } }
-
-  function resetCaches() {
-    sc.stack = ''; sc.type = sc.live = sc.n = sc.step = -1;
-    sc.L.forEach(L => { L.t = ''; L.o = L.hi = L.ao = -1; });
+  function loopRun() {
+    if (heroPlaying || !scrubOn || !heroOn || document.hidden || !heroAnims.length) return;
+    heroPlaying = true;
+    heroAnims.forEach(a => { a.currentTime = heroTime; a.play(); });
+    stepWatch();
+    stepTimer = setInterval(stepWatch, 100);
   }
-
-  function clearSceneInline() {
-    stack.style.transform = '';
-    ['--type', '--live'].forEach(v => stack.style.removeProperty(v));
-    layers.forEach(el => {
-      el.style.transform = '';
-      el.style.opacity = '';
-      el.style.removeProperty('--hi');
-      el.style.removeProperty('--ao');
-    });
+  function loopHalt() {
+    if (!heroPlaying) return;
+    heroPlaying = false;
+    heroTime = heroAnims[0].currentTime || 0;
+    heroAnims.forEach(a => { a.pause(); a.currentTime = heroTime; });
+    clearInterval(stepTimer);
+    stepTimer = null;
+  }
+  // o mouse (ou o dedo) inclina a cena de leve: só um elemento muda, sem recalcular as camadas
+  let ptT = '';
+  function tiltScene() {
+    if (!ptilt) return;
+    const t = `rotateX(${(-ptr.cy * 4).toFixed(2)}deg) rotateY(${(ptr.cx * 5).toFixed(2)}deg)`;
+    if (t !== ptT) { ptilt.style.transform = t; ptT = t; }
   }
 
   function enableScrub() {
@@ -188,22 +261,29 @@
     scrubOn = true;
     root.classList.add('scrub');
     measure();
-    resetCaches();
-    frame(shown);
+    builtFor = '';
+    buildScene();
+    sc.step = sc.n = -1;
+    stepWatch();
     loopRun();
   }
 
   function disableScrub() {
     if (!scrubOn) return;
-    scrubOn = false;
     loopHalt();
-    clearSceneInline();
+    scrubOn = false;
+    heroAnims.forEach(a => a.cancel());
+    heroAnims = [];
+    heroFixed.forEach(el => { el.style.opacity = ''; });
+    heroFixed = [];
+    if (ptilt) ptilt.style.transform = '';
+    ptT = '';
     root.classList.remove('scrub');
   }
 
   // movimento reduzido recebe o site pronto, parado; com animações, o loop roda
   function applyHeroMode() {
-    if (RM.matches) disableScrub();
+    if (RM.matches || !stack.animate) disableScrub();
     else enableScrub();
   }
   RM.addEventListener('change', applyHeroMode);
@@ -214,10 +294,6 @@
   }).observe(hero);
   document.addEventListener('visibilitychange', () => { if (document.hidden) loopHalt(); else loopRun(); });
 
-  // a seta "role para ver mais" some assim que a pessoa começa a descer
-  addEventListener('scroll', () => {
-    sc.cue = setVar(cue, '--cue', clamp(1 - scrollY / 240, 0, 1), sc.cue, 0.02);
-  }, { passive: true });
 
   let resizeRaf = null;
   addEventListener('resize', () => {
@@ -226,8 +302,7 @@
       resizeRaf = null;
       if (!scrubOn) return;
       measure();
-      resetCaches();
-      frame(shown);
+      buildScene();
     });
   });
 
@@ -272,18 +347,33 @@
     const v = STYLES[style](d.ac);
     const css = `--bg:${v.bg};--fg:${v.fg};--mu:${v.mu};--cd:${v.cd};--ac:${v.ac};--on:${v.on};--ln:${v.ln};--ff:${d.ff};--fw:${d.fw}`;
     const cards = d.items.map(([t, s]) => `<div class="ms-card"><i class="ms-thumb"></i><b>${t}</b><span>${s}</span></div>`).join('');
-    return `<div class="ms ms--${d.layout}${x.anim ? ' ms--anim' : ''}" style="${css}">` +
+    return `<div class="ms ms--${d.layout}${x.anim ? ' ms--anim' : ''}" style="${css}"><div class="ms-in">` +
       `<div class="ms-nav"><span class="ms-logo">${d.name}</span><span class="ms-links">${d.links.map(l => `<i>${l}</i>`).join('')}</span><span class="ms-btn">${d.cta}</span></div>` +
       `<div class="ms-hero"><div class="ms-copy"><span class="ms-kick">${d.kick}</span><b class="ms-h">${d.h}</b><span class="ms-p">${d.p}</span><span class="ms-btn ms-btn--lg">${d.cta}</span></div><div class="ms-art">${ART[d.art]}</div></div>` +
       (x.items ? `<div class="ms-sec"><b class="ms-sh">${d.sh}</b><div class="ms-cards">${cards}</div></div>` : '') +
       (x.gallery ? `<div class="ms-sec"><b class="ms-sh">Fotos</b><div class="ms-gal"><i></i><i></i><i></i><i></i></div></div>` : '') +
       (x.map ? `<div class="ms-sec ms-map"><div class="ms-mapart">${MAP}</div><div class="ms-info"><b>Onde estamos</b><span>${d.addr}</span><span>${d.hours}</span></div></div>` : '') +
-      `<div class="ms-foot">© 2026 ${d.name} · site conceito</div></div>`;
+      `<div class="ms-foot">© 2026 ${d.name} · site conceito</div></div></div>`;
   }
 
-  $$('.work .ms-view').forEach(v => {
+  // roda uma vez: quando o navegador estiver livre ou quando a seção chegar perto da tela, o que vier primeiro
+  function soon(el, fn) {
+    let did = false;
+    const go = () => { if (did) return; did = true; io.disconnect(); fn(); };
+    const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) go(); }, { rootMargin: '120% 0px' });
+    io.observe(el);
+    addEventListener('load', () => idle(go), { once: true });
+    if (document.readyState === 'complete') idle(go);
+  }
+  soon($('#trabalhos'), () => $$('.work .ms-view').forEach(v => {
     v.innerHTML = msHTML(v.dataset.ms, v.dataset.style, { items: true, gallery: true, map: true });
-  });
+  }));
+  // cada mini site é montado uma vez em 1024px e reduzido com zoom para caber no card, sem recalcular nada por dentro
+  const msRO = new ResizeObserver(entries => entries.forEach(en => {
+    const w = en.contentRect.width;
+    if (w) en.target.style.setProperty('--k', (w / 1024).toFixed(4));
+  }));
+  $$('.ms-view').forEach(v => msRO.observe(v));
 
   /* ---------- monte o seu ---------- */
   const cfg = $('#cfg');
@@ -328,20 +418,17 @@
     const nameEl = $('#pk-name');
     if (nameEl.textContent !== name) {
       nameEl.textContent = name;
-      if (animate && !RM.matches) { nameEl.classList.remove('pk-swap'); void nameEl.offsetWidth; nameEl.classList.add('pk-swap'); }
+      if (animate && !RM.matches) replay(nameEl, 'pk-swap');
     }
     countPrice(price, animate);
     const extras = x.length ? joinPt(x.map(v => X_LABEL[v])) : 'o básico';
     $('#pk-send').href = waLink(`Oi David! Montei uma ideia no seu site: ${BIZ[biz].label}, estilo ${style}, com ${extras}. Deu ${name.toLowerCase()}, a partir de ${price}. Quero um orçamento.`);
-    if (animate && !RM.matches) {
-      pvBody.classList.remove('rebuild');
-      void pvBody.offsetWidth;
-      pvBody.classList.add('rebuild');
-    }
+    if (animate && !RM.matches) replay(pvBody, 'rebuild');
   }
+  $('#pk-name').addEventListener('animationend', e => e.currentTarget.classList.remove('pk-swap'));
   cfg.addEventListener('change', () => updateCfg(true));
   cfg.addEventListener('submit', e => e.preventDefault());
-  updateCfg(false);
+  soon($('#monte'), () => updateCfg(false));
 
   /* ---------- como funciona: a linha que se traça ---------- */
   const stepsWrap = $('#steps');
@@ -352,9 +439,10 @@
     stepsRaf = null;
     let p = 1;
     if (!RM.matches) {
-      const r = stepsWrap.getBoundingClientRect();
-      const vh = innerHeight;
-      p = clamp((vh * 0.82 - r.top) / (r.height * 0.8 + vh * 0.3), 0, 1);
+      const vh = VH;
+      if (geo.stepsTop === Infinity) return;
+      const top = geo.stepsTop - scrollPos;
+      p = clamp((vh * 0.82 - top) / (geo.stepsH * 0.8 + vh * 0.3), 0, 1);
     }
     if (Math.abs(p - lastDraw) > 0.003 || (p !== lastDraw && (p === 0 || p === 1))) {
       stepsWrap.style.setProperty('--draw', p.toFixed(3));
@@ -435,9 +523,7 @@
   });
   function sweepRow(row) {
     if (RM.matches) return;
-    row.classList.remove('swept');
-    void row.offsetWidth;
-    row.classList.add('swept');
+    replay(row, 'swept');
   }
   $$('.cmp-row').forEach(row => {
     row.addEventListener('pointerenter', e => { if (e.pointerType !== 'touch') sweepRow(row); });
@@ -466,10 +552,9 @@
   const nav = $('#nav');
   let navSolid = null;
   const navCheck = () => {
-    const on = scrollY > 24;
+    const on = scrollPos > 24;
     if (on !== navSolid) { nav.classList.toggle('solid', on); navSolid = on; }
   };
-  addEventListener('scroll', navCheck, { passive: true });
   navCheck();
 
   /* ---------- menu de celular e tablet ---------- */
@@ -503,7 +588,7 @@
     ptr.cy += (ptr.tcy - ptr.cy) * b;
     ptr.drag += ((ptr.dragging ? 1 : 0) - ptr.drag) * b;
     spotEl.style.transform = `translate3d(${ptr.x.toFixed(1)}px,${ptr.y.toFixed(1)}px,0)`;
-    if (scrubOn && heroOn && !loopRaf) frame(shown);
+    if (scrubOn && heroOn) tiltScene();
     paintStars();
     const rest = Math.abs(ptr.tx - ptr.x) < 0.5 && Math.abs(ptr.ty - ptr.y) < 0.5 &&
       Math.abs(ptr.tcx - ptr.cx) < 0.002 && Math.abs(ptr.tcy - ptr.cy) < 0.002 &&
@@ -516,8 +601,8 @@
     ptr.tx = e.clientX;
     ptr.ty = e.clientY;
     if (e.pointerType !== 'touch') {
-      ptr.tcx = clamp(e.clientX / innerWidth * 2 - 1, -1, 1);
-      ptr.tcy = clamp(e.clientY / innerHeight * 2 - 1, -1, 1);
+      ptr.tcx = clamp(e.clientX / VW * 2 - 1, -1, 1);
+      ptr.tcy = clamp(e.clientY / VH * 2 - 1, -1, 1);
     }
     spotEl.classList.add('on');
     ptrKick();
@@ -539,8 +624,8 @@
   addEventListener('touchmove', e => {
     if (RM.matches || !e.touches[0]) return;
     const t = e.touches[0];
-    ptr.tcx = clamp(t.clientX / innerWidth * 2 - 1, -1, 1);
-    ptr.tcy = clamp(t.clientY / innerHeight * 2 - 1, -1, 1);
+    ptr.tcx = clamp(t.clientX / VW * 2 - 1, -1, 1);
+    ptr.tcy = clamp(t.clientY / VH * 2 - 1, -1, 1);
     ptr.tx = t.clientX;
     ptr.ty = t.clientY;
     ptrKick();
@@ -619,46 +704,15 @@
   const depthEls = $$('[data-depth]').map(el => ({ el, d: +el.dataset.depth, y: 0, vis: false }));
   const depthIO = new IntersectionObserver(es => es.forEach(en => {
     const o = depthEls.find(x => x.el === en.target);
-    if (o) o.vis = en.isIntersecting;
+    if (!o) return;
+    o.vis = en.isIntersecting;
+    if (o.vis) measureDepth(o, scrollPos);
   }), { rootMargin: '200px 0px' });
   depthEls.forEach(o => depthIO.observe(o.el));
   const aur = $$('.aur');
   const aurO = aur.map(() => -1);
 
-  /* ---------- fundo astral: estrelas geradas uma vez, em três profundidades ---------- */
-  function starTiles(seed, n, size, rMin, rMax, oMin, oMax, glow) {
-    const r = rng(seed);
-    const stars = [];
-    for (let i = 0; i < n; i++) {
-      const h = r();
-      stars.push({ x: r() * size, y: r() * size, rad: rMin + r() * (rMax - rMin), o: oMin + r() * (oMax - oMin), c: h < 0.12 ? '#A9C6FF' : h < 0.17 ? '#FFE6C7' : '#FFFFFF' });
-    }
-    const head = `<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}'>` +
-      (glow ? `<defs><radialGradient id='g'><stop offset='0' stop-color='#fff'/><stop offset='.3' stop-color='#cfe0ff' stop-opacity='.5'/><stop offset='1' stop-color='#cfe0ff' stop-opacity='0'/></radialGradient></defs>` : '');
-    const dot = s => (glow && s.rad > 1.15 ? `<circle cx='${s.x.toFixed(1)}' cy='${s.y.toFixed(1)}' r='${(s.rad * 4.5).toFixed(1)}' fill='url(#g)' opacity='${(s.o * 0.45).toFixed(2)}'/>` : '') +
-      `<circle cx='${s.x.toFixed(1)}' cy='${s.y.toFixed(1)}' r='${s.rad.toFixed(2)}' fill='${s.c}' opacity='${s.o.toFixed(2)}'/>`;
-    const url = svg => `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
-    const half = Math.ceil(n / 2);
-    return {
-      a: url(head + stars.slice(0, half).map(dot).join('') + '</svg>'),
-      b: url(head + stars.slice(half).map(dot).join('') + '</svg>'),
-      streak: url(`<svg xmlns='http://www.w3.org/2000/svg' width='${size}' height='${size}'>` +
-        stars.map(s => `<ellipse cx='${s.x.toFixed(1)}' cy='${s.y.toFixed(1)}' rx='${(s.rad * 0.6).toFixed(2)}' ry='${(s.rad * 9).toFixed(1)}' fill='${s.c}' opacity='${(s.o * 0.55).toFixed(2)}'/>`).join('') + '</svg>')
-    };
-  }
-  const STAR_LAYERS = [
-    { el: $('.s-far'), size: 700, speed: 0.025, t: starTiles(11, 170, 700, 0.3, 0.75, 0.25, 0.75, false) },
-    { el: $('.s-mid'), size: 900, speed: 0.07, t: starTiles(23, 95, 900, 0.55, 1.1, 0.4, 0.9, false) },
-    { el: $('.s-near'), size: 1100, speed: 0.15, t: starTiles(37, 34, 1100, 0.9, 1.7, 0.6, 1, true) }
-  ];
-  STAR_LAYERS.forEach(L => {
-    L.y = null;
-    $$('.st', L.el).forEach(st => {
-      if (!st.classList.contains('b')) st.style.backgroundImage = st.classList.contains('streak') ? L.t.streak : L.t.a + ',' + L.t.b;
-    });
-  });
-  $('.gx-dust').style.backgroundImage = starTiles(53, 260, 520, 0.25, 0.6, 0.3, 0.8, false).a;
-  const streakEl = $('.s-near .streak');
+  /* ---------- fundo astral: aurora, galáxia, estrela cadente e o planeta no fim da página ---------- */
   const galaxy = $('#galaxy');
   const aurs = $('#aurs');
   let aursT = '';
@@ -670,285 +724,156 @@
     meteor.style.setProperty('--tx', (45 + Math.random() * 45).toFixed(1) + '%');
     meteor.style.setProperty('--ty', (4 + Math.random() * 30).toFixed(1) + '%');
   });
-  let lastY = scrollY, vel = 0, velRaf = null, streakO = -1, gxT = '', hzT = '', starsDim = null, skyAlpha = 1;
-
-  // cada camada de estrelas anda com a rolagem e desliza ao contrário do mouse, mais perto = mais movimento
-  const STAR_SHIFT = [7, 16, 30];
-  function paintStars() {
-    const k = 1 + ptr.drag * 1.6;
-    STAR_LAYERS.forEach((L, i) => {
-      const sx = -ptr.cx * STAR_SHIFT[i] * k;
-      const sy = (L.sy || 0) - ptr.cy * STAR_SHIFT[i] * k;
-      const t = `translate3d(${sx.toFixed(1)}px,${sy.toFixed(1)}px,0)`;
-      if (t !== L.y) { L.el.style.transform = t; L.y = t; }
-    });
-  }
+  let gxT = '', hzT = '', starsDim = null;
 
   /* ---------- céu interativo: galáxia que gira com a rolagem, o seu D virando constelação, estrelas cadentes ---------- */
-  const sky = $('#skycv');
-  const sctx = sky.getContext('2d');
-  let SW = 0, SH = 0, parts = [], skyRaf = null, skyLast = 0, skyY = scrollY, skyAcc = 0, skyClock = 0;
-  // se o aparelho estiver lento, o céu se adapta: menos estrelas e meio ritmo de atualização
-  let skyEma = 16.7, skyLow = false, skySkip = false, skyFrame = 0, skyBusyUntil = 0;
-  // com a pessoa parada, o céu desenha 1 a cada 3 quadros; ao mexer o mouse, rolar ou tocar, volta ao ritmo cheio
-  const skyWake = () => { skyBusyUntil = performance.now() + 1500; };
-  ['pointermove', 'pointerdown', 'scroll', 'touchmove', 'wheel'].forEach(t => addEventListener(t, skyWake, { passive: true }));
-  const shocks = [];
-  const meteors = [];
-  // os vértices do logo D (as duas peças), em coordenadas de 0 a 600
-  const LOGO = [
-    [[100, 140], [245, 86], [238, 410], [262, 412], [260, 498], [82, 486]],
-    [[262, 108], [448, 46], [505, 96], [508, 372], [452, 428], [258, 455], [256, 410], [398, 400], [400, 140], [292, 148], [290, 186], [266, 190]]
-  ];
-  let cons = [];
-  // um carimbo de brilho desenhado uma vez: cada estrela vira um drawImage barato em vez de um círculo novo
-  const glowSprite = document.createElement('canvas');
-  glowSprite.width = glowSprite.height = 32;
-  (() => {
-    const g = glowSprite.getContext('2d');
-    const rg = g.createRadialGradient(16, 16, 0, 16, 16, 16);
-    rg.addColorStop(0, 'rgba(255,255,255,1)');
-    rg.addColorStop(0.12, 'rgba(235,242,255,.95)');
-    rg.addColorStop(0.3, 'rgba(200,220,255,.28)');
-    rg.addColorStop(1, 'rgba(200,220,255,0)');
-    g.fillStyle = rg;
-    g.fillRect(0, 0, 32, 32);
-  })();
-  function skySize() {
-    const dpr = 1;
-    SW = innerWidth;
-    SH = innerHeight;
-    sky.width = Math.round(SW * dpr);
-    sky.height = Math.round(SH * dpr);
-    sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // estrelas soltas espalhadas num disco que cobre a tela inteira, para a galáxia poder girar sem buracos
-    const r = rng(77);
-    const n = Math.round((SW < 760 ? 90 : 160) * (skyLow ? 0.6 : 1));
-    const R = Math.hypot(SW, SH) * 0.56;
-    parts = [];
-    for (let i = 0; i < n; i++) {
-      const rad = Math.sqrt(r()) * R, ang = r() * 6.283;
-      parts.push({ rad, ang, x: SW / 2 + Math.cos(ang) * rad, y: SH / 2 + Math.sin(ang) * rad, vx: 0, vy: 0, size: 0.5 + r() * 1.3, a: 0.35 + r() * 0.55, ph: r() * 6.283, sp: 0.4 + r() * 1.1 });
-    }
-    // a constelação: cada vértice começa num ponto qualquer do céu e vai para o seu lugar no D
-    // no computador o D termina no espaço livre embaixo das camadas da chamada final; no celular, no alto da tela
-    const wide = SW >= 981;
-    const S = wide ? Math.min(SH * 0.3, SW * 0.19, 250) : Math.min(SW * 0.5, 220);
-    const cx = wide ? SW * 0.235 : SW * 0.5, cy = SH * (wide ? 0.575 : 0.24);
-    const rc = rng(91);
-    cons = LOGO.map(poly => poly.map(([vx, vy]) => ({
-      sx: rc() * SW, sy: rc() * SH,
-      tx: cx + (vx - 300) / 600 * S, ty: cy + (vy - 300) / 600 * S,
-      ph: rc() * 6.283
-    })));
+  // o desenho roda num trabalhador separado do navegador (assets/sky.js): a página só manda recados curtos
+  // (rolagem, ponteiro, cliques) e o processador principal fica livre; sem suporte, o mesmo código roda aqui
+  const SKY_URL = ((document.currentScript && document.currentScript.src) || 'assets/site.js').replace(/site\.js(\?.*)?$/, 'sky.js$1');
+  const COARSE = matchMedia('(pointer: coarse)');
+  let skyLow = false, skyPost = null, skyQueue = [];
+  const skyMsg = m => { if (skyPost) skyPost(m); else skyQueue.push(m); };
+  function skyReady(post) { skyPost = post; skyQueue.forEach(post); skyQueue = []; }
+  // aparelho lento: o céu avisa, e a rolagem suave da roda dá lugar à nativa, que é mais leve
+  function skyNotify(d) { if (d && d.t === 'low' && !skyLow) { skyLow = true; applySmooth(); } }
+  function skyOnPage(cv) {
+    const s = document.createElement('script');
+    s.src = SKY_URL;
+    s.onload = () => { const eng = window.DDSky(cv, skyNotify); skyReady(m => eng.msg(m)); };
+    document.head.appendChild(s);
   }
-  function drawGlowDot(x, y, size, alpha) {
-    const g = size * 5;
-    sctx.globalAlpha = alpha;
-    sctx.drawImage(glowSprite, x - g, y - g, g * 2, g * 2);
+  function skyBoot() {
+    const cv = $('#skycv');
+    if (cv.transferControlToOffscreen && typeof Worker !== 'undefined') {
+      let w = null;
+      try { w = new Worker(SKY_URL); } catch (e) { w = null; }
+      if (w) {
+        let alive = false;
+        const off = cv.transferControlToOffscreen();
+        w.onmessage = e => { if (e.data && e.data.t === 'ready') alive = true; else skyNotify(e.data); };
+        // se o trabalhador não carregar, troca por um canvas novo e desenha na página mesmo
+        w.onerror = () => {
+          if (alive) return;
+          w.terminate();
+          const fresh = cv.cloneNode(false);
+          cv.replaceWith(fresh);
+          skyPost = null;
+          skyQueue = [];
+          skyState();
+          skyOnPage(fresh);
+        };
+        w.postMessage({ t: 'init', canvas: off }, [off]);
+        skyReady(m => w.postMessage(m));
+        return;
+      }
+    }
+    skyOnPage(cv);
   }
-  function skyTick(now) {
-    skyFrame++;
-    const busy = now < skyBusyUntil || shocks.length > 0 || meteors.length > 0;
-    if (!busy && skyFrame % 3 !== 0) { skyRaf = requestAnimationFrame(skyTick); return; }
-    if (skyLow && busy) {
-      skySkip = !skySkip;
-      if (skySkip) { skyRaf = requestAnimationFrame(skyTick); return; }
-    }
-    const dt = Math.min(50, now - (skyLast || now));
-    skyLast = now;
-    if (busy) skyEma = skyEma * 0.95 + dt * 0.05;
-    if (!skyLow && skyClock > 3000 && skyEma > 26) { skyLow = true; parts.length = Math.round(parts.length * 0.6); }
-    skyClock += dt;
-    const f = dt / 16.667;
-    sctx.clearRect(0, 0, SW, SH);
-    const max = document.documentElement.scrollHeight - innerHeight;
-    const pg = max > 0 ? clamp(scrollY / max, 0, 1) : 0;
-    const dy = scrollY - skyY;
-    skyY = scrollY;
-    // a galáxia gira devagar sozinha e bem mais quando a pessoa rola
-    const theta = scrollY * 0.00016 + skyClock * 0.000006;
-    const R = SW < 760 ? 110 : 150, R2 = R * R;
-    const pOn = spotEl.classList.contains('on');
-    const damp = Math.pow(0.88, f);
-    for (let s = shocks.length - 1; s >= 0; s--) if ((now - shocks[s].t0) > 1300) shocks.splice(s, 1);
-    sctx.fillStyle = '#DCE8FF';
-    for (const p of parts) {
-      const hx = SW / 2 + Math.cos(p.ang + theta) * p.rad;
-      const hy = SH / 2 + Math.sin(p.ang + theta) * p.rad * 0.86;
-      let ax = (hx - p.x) * 0.012, ay = (hy - p.y) * 0.012;
-      if (pOn) {
-        const ddx = p.x - ptr.x, ddy = p.y - ptr.y, d2 = ddx * ddx + ddy * ddy;
-        if (d2 < R2) { const d = Math.sqrt(d2) || 1, k = (1 - d / R) ** 2 * 1.5; ax += ddx / d * k; ay += ddy / d * k; }
-      }
-      for (const sh of shocks) {
-        const age = Math.max(0, (now - sh.t0) / 1000), rad = age * 620;
-        const ddx = p.x - sh.x, ddy = p.y - sh.y, d = Math.sqrt(ddx * ddx + ddy * ddy) || 1;
-        if (Math.abs(d - rad) < 46) { const k = (1 - age) * 1.8; ax += ddx / d * k; ay += ddy / d * k; }
-      }
-      p.vx = (p.vx + ax * f) * damp;
-      p.vy = (p.vy + ay * f) * damp;
-      p.x += p.vx * f;
-      p.y += p.vy * f;
-      if (p.x < -20 || p.x > SW + 20 || p.y < -20 || p.y > SH + 20) continue;
-      const tw = 0.62 + 0.38 * Math.sin(now * 0.001 * p.sp + p.ph);
-      if (p.size > 1.35) drawGlowDot(p.x, p.y, p.size, p.a * tw * skyAlpha);
-      else {
-        sctx.globalAlpha = p.a * tw * skyAlpha;
-        sctx.fillRect(p.x - p.size, p.y - p.size, p.size * 2, p.size * 2);
-      }
-    }
-
-    // o seu D se forma no céu conforme a página desce, e as linhas da constelação se desenham no fim
-    const form = easeIO(sstep(0.04, 0.82, pg));
-    const lines = sstep(0.4, 0.94, pg);
-    const done = sstep(0.9, 1, pg);
-    const conAlpha = Math.max(skyAlpha, 0.55 + done * 0.45);
-    const pts = cons.map(poly => poly.map(v => ({
-      x: lerp(v.sx, v.tx, form) + Math.sin(now * 0.0011 + v.ph) * 1.2 * (1 - form * 0.6),
-      y: lerp(v.sy, v.ty, form) + Math.cos(now * 0.0013 + v.ph) * 1.2 * (1 - form * 0.6),
-      ph: v.ph
-    })));
-    if (lines > 0) {
-      const total = pts.reduce((n, poly) => n + poly.length, 0);
-      let budget = lines * total;
-      sctx.strokeStyle = '#8AB2FF';
-      sctx.lineWidth = 1.2;
-      sctx.globalAlpha = (0.22 + done * (0.2 + 0.08 * Math.sin(now * 0.002))) * conAlpha;
-      sctx.beginPath();
-      for (const poly of pts) {
-        for (let i = 0; i < poly.length && budget > 0; i++) {
-          const a = poly[i], b = poly[(i + 1) % poly.length];
-          const k = Math.min(1, budget);
-          sctx.moveTo(a.x, a.y);
-          sctx.lineTo(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k);
-          budget -= 1;
-        }
-      }
-      sctx.stroke();
-    }
-    sctx.fillStyle = '#E6EEFF';
-    for (const poly of pts) {
-      for (const v of poly) {
-        const tw = 0.7 + 0.3 * Math.sin(now * 0.0017 + v.ph);
-        drawGlowDot(v.x, v.y, 1.1 + form * 0.6 + done * 0.4, (0.35 + form * 0.6) * tw * conAlpha);
-      }
-    }
-
-    // estrelas cadentes: a cada trecho rolado, uma risca o céu
-    skyAcc += Math.abs(dy);
-    if (skyAcc > 1100 && meteors.length < 3) {
-      skyAcc = 0;
-      const ang = (150 + Math.random() * 14) * Math.PI / 180;
-      meteors.push({ x: SW * (0.35 + Math.random() * 0.6), y: SH * (0.04 + Math.random() * 0.36), ang, len: 140 + Math.random() * 120, t0: now });
-    }
-    for (let m = meteors.length - 1; m >= 0; m--) {
-      const mt = meteors[m];
-      const age = (now - mt.t0) / 1000;
-      if (age > 0.9) { meteors.splice(m, 1); continue; }
-      if (age < 0) continue;
-      const dist = age * 950;
-      const hx = mt.x + Math.cos(mt.ang) * dist, hy = mt.y + Math.sin(mt.ang) * dist;
-      const tx = hx - Math.cos(mt.ang) * mt.len, ty = hy - Math.sin(mt.ang) * mt.len;
-      const gr = sctx.createLinearGradient(tx, ty, hx, hy);
-      gr.addColorStop(0, 'rgba(190,215,255,0)');
-      gr.addColorStop(1, 'rgba(225,236,255,1)');
-      sctx.globalAlpha = (age < 0.15 ? age / 0.15 : 1 - (age - 0.15) / 0.75) * 0.9;
-      sctx.strokeStyle = gr;
-      sctx.lineWidth = 1.6;
-      sctx.beginPath();
-      sctx.moveTo(tx, ty);
-      sctx.lineTo(hx, hy);
-      sctx.stroke();
-    }
-
-    for (const sh of shocks) {
-      const age = (now - sh.t0) / 1000;
-      if (age <= 0 || age > 1.1) continue;
-      sctx.globalAlpha = 0.28 * (1 - age / 1.1) * skyAlpha;
-      sctx.strokeStyle = '#8AB2FF';
-      sctx.lineWidth = 1.5;
-      sctx.beginPath();
-      sctx.arc(sh.x, sh.y, age * 620, 0, 6.283);
-      sctx.stroke();
-    }
-    sctx.globalAlpha = 1;
-    skyRaf = requestAnimationFrame(skyTick);
+  const skySend = () => skyMsg({ t: 'scroll', y: scrollPos, max: pageMax });
+  // o mouse e o dedo mexem as estrelas dentro do próprio desenho do céu
+  function paintStars() { skyMsg({ t: 'ptr', x: ptr.x, y: ptr.y, cx: ptr.cx, cy: ptr.cy, drag: ptr.drag, on: spotEl.classList.contains('on') }); }
+  function skyStart() { skyMsg({ t: 'run', on: !RM.matches && !document.hidden }); }
+  function skyStop() { skyMsg({ t: 'run', on: false }); }
+  const skySize = () => skyMsg({ t: 'size', w: VW, h: VH });
+  // tudo o que o céu precisa saber para começar (ou recomeçar)
+  function skyState() {
+    skySize();
+    skyMsg({ t: 'coarse', on: COARSE.matches });
+    skyMsg({ t: 'alpha', a: starsDim ? 0.42 : 1 });
+    skySend();
+    paintStars();
+    skyStart();
   }
-  function skyStart() { if (!skyRaf && !RM.matches && !document.hidden) { skyLast = 0; skyRaf = requestAnimationFrame(skyTick); } }
-  function skyStop() { if (skyRaf) { cancelAnimationFrame(skyRaf); skyRaf = null; } sctx.clearRect(0, 0, SW, SH); }
-  skySize();
-  skyStart();
+  skyState();
+  COARSE.addEventListener('change', () => skyMsg({ t: 'coarse', on: COARSE.matches }));
+  // começa logo depois da primeira pintura, numa tarefa própria
+  requestAnimationFrame(() => setTimeout(skyBoot, 0));
+  addEventListener('scroll', skySend, { passive: true });
   let skyResize = null;
   addEventListener('resize', () => { clearTimeout(skyResize); skyResize = setTimeout(skySize, 200); });
   document.addEventListener('visibilitychange', () => { if (document.hidden) skyStop(); else skyStart(); });
   // um clique (ou toque) em qualquer lugar manda uma onda pelo céu
   addEventListener('pointerdown', e => {
     if (RM.matches || e.target.closest('input, textarea')) return;
-    shocks.push({ x: e.clientX, y: e.clientY, t0: performance.now() });
-    if (shocks.length > 4) shocks.shift();
+    skyMsg({ t: 'shock', x: e.clientX, y: e.clientY });
   }, { passive: true });
-  // rastro das estrelas: acende com a velocidade da rolagem e apaga sozinho quando ela para
-  function velTick() {
-    vel *= 0.9;
-    const o = clamp((Math.abs(vel) - 6) / 50, 0, 0.75);
-    if (Math.abs(o - streakO) > 0.01 || (o === 0 && streakO !== 0)) { streakEl.style.setProperty('--v', o.toFixed(2)); streakO = o; }
-    velRaf = Math.abs(vel) > 0.5 ? requestAnimationFrame(velTick) : null;
-  }
-  function spaceFrame(pg) {
+  // medidas da página: lidas só quando ela muda de tamanho (seções montando, giro da tela), nunca no meio da rolagem
+  const geo = { heroH: 0, contatoTop: Infinity, footH: 0, hzH: 0, stepsTop: Infinity, stepsH: 1 };
+  const near = { contato: false, steps: false };
+  function measureGeo() {
     const y = scrollY;
-    vel += clamp(y - lastY, -160, 160) * 0.35;
-    lastY = y;
-    if (!velRaf && !RM.matches) velRaf = requestAnimationFrame(velTick);
-    STAR_LAYERS.forEach(L => { L.sy = -((y * L.speed) % L.size); });
-    paintStars();
+    scrollPos = y;
+    pageMax = document.documentElement.scrollHeight - VH;
+    skySend();
+    geo.heroH = hero.offsetHeight;
+    geo.footH = foot.offsetHeight;
+    geo.hzH = horizon.offsetHeight;
+    if (near.contato) geo.contatoTop = contato.getBoundingClientRect().top + y;
+    if (near.steps) { const sr = stepsWrap.getBoundingClientRect(); geo.stepsTop = sr.top + y; geo.stepsH = sr.height || 1; }
+    depthEls.forEach(o => { if (o.vis) measureDepth(o, y); });
+  }
+  function measureDepth(o, y) { const r = o.el.getBoundingClientRect(); o.top = r.top + y - o.y; o.h = r.height; }
+  // a chamada final e as etapas só são medidas quando chegam perto da tela
+  const nearIO = new IntersectionObserver(es => es.forEach(en => {
+    const k = en.target === contato ? 'contato' : 'steps';
+    near[k] = en.isIntersecting;
+    if (near[k]) { measureGeo(); queueDepth(); queueSteps(); }
+    else if (k === 'contato') geo.contatoTop = Infinity;
+  }), { rootMargin: '100% 0px' });
+  function spaceFrame(pg, y, vh) {
+    const ct = geo.contatoTop - y;
     // depois do topo, as estrelas ficam mais discretas atrás dos textos; voltam a brilhar no fim, perto do planeta
-    const dim = y > hero.offsetHeight - innerHeight * 0.5 && contato.getBoundingClientRect().top > innerHeight * 0.4;
-    if (dim !== starsDim) { STAR_LAYERS.forEach(L => L.el.style.setProperty('--so', dim ? '0.4' : '1')); starsDim = dim; skyAlpha = dim ? 0.45 : 1; }
+    const dim = y > geo.heroH - vh * 0.5 && ct > vh * 0.4;
+    if (dim !== starsDim) { starsDim = dim; skyMsg({ t: 'alpha', a: dim ? 0.42 : 1 }); }
     const au = `translate3d(0,${(-pg * 22).toFixed(2)}vh,0) rotate(${(pg * 10).toFixed(2)}deg)`;
     if (au !== aursT) { aurs.style.transform = au; aursT = au; }
     const g = `translate3d(0,${(-pg * 34).toFixed(2)}vh,0) rotate(${(-18 + pg * 14).toFixed(2)}deg)`;
     if (g !== gxT) { galaxy.style.transform = g; gxT = g; }
-    const r = contato.getBoundingClientRect();
-    const t = sstep(0, 1, (innerHeight - r.top) / (innerHeight * 1.1));
+    const t = sstep(0, 1, (vh - ct) / (vh * 1.1));
     // no fim, a borda do planeta para logo acima do rodapé, em qualquer tela
-    const rise = Math.min(foot.offsetHeight + 60, innerHeight * 0.45);
-    const h = `translate3d(0,${(-t * rise).toFixed(1)}px,0)`;
+    const rise = Math.min(geo.footH + 60, vh * 0.45);
+    const h = `translate3d(0,${(-t * (rise + geo.hzH * 0.525)).toFixed(1)}px,0)`;
     if (h !== hzT) { horizon.style.transform = h; hzT = h; }
   }
 
   let depthRaf = null;
   function depthFrame() {
     depthRaf = null;
-    const max = document.documentElement.scrollHeight - innerHeight;
-    const pg = max > 0 ? clamp(scrollY / max, 0, 1) : 0;
+    const y = scrollPos, vh = VH;
+    const pg = pageMax > 0 ? clamp(y / pageMax, 0, 1) : 0;
+    // a seta "role para ver mais" some assim que a pessoa começa a descer
+    sc.cue = setVar(cue, '--cue', clamp(1 - y / 240, 0, 1), sc.cue, 0.02);
+    navCheck();
     [1 - pg * 0.45, 0.55 + pg * 0.45, 0.35 + pg * 0.65, 0.4 + pg * 0.6].forEach((o, i) => {
       if (aur[i] && Math.abs(o - aurO[i]) > 0.02) { aur[i].style.setProperty('--o', o.toFixed(2)); aurO[i] = o; }
     });
     if (RM.matches) return;
-    spaceFrame(pg);
-    const vh = innerHeight;
+    spaceFrame(pg, y, vh);
     const k = STACKED.matches ? 0.6 : 1;
     depthEls.forEach(o => {
-      if (!o.vis) return;
-      const r = o.el.getBoundingClientRect();
-      const mid = r.top - o.y + r.height / 2;
-      const y = clamp((vh / 2 - mid) * o.d * k, -80, 80);
-      if (Math.abs(y - o.y) > 0.3) { o.el.style.transform = `translate3d(0,${y.toFixed(1)}px,0)`; o.y = y; }
+      if (!o.vis || o.top === undefined) return;
+      const mid = o.top - y + o.h / 2;
+      const d = clamp((vh / 2 - mid) * o.d * k, -80, 80);
+      if (Math.abs(d - o.y) > 0.3) { o.el.style.transform = `translate3d(0,${d.toFixed(1)}px,0)`; o.y = d; }
     });
   }
   const queueDepth = () => { if (!depthRaf) depthRaf = requestAnimationFrame(depthFrame); };
   addEventListener('scroll', queueDepth, { passive: true });
-  addEventListener('resize', queueDepth);
+  // quando a página muda de tamanho (uma seção monta, a tela gira), mede de novo, depois do layout pronto
+  new ResizeObserver(() => { measureGeo(); queueDepth(); queueSteps(); }).observe(document.body);
+  addEventListener('resize', () => { measureGeo(); queueDepth(); });
+  measureGeo();
   queueDepth();
+  nearIO.observe(contato);
+  nearIO.observe(stepsWrap);
 
   /* ---------- rolagem suave na roda do mouse (toque, teclado e barra seguem nativos) ---------- */
   const SMOOTH_Q = matchMedia('(hover: hover) and (pointer: fine)');
   let sT = 0, sC = 0, sRaf = null, sLast = 0;
-  const maxScroll = () => document.documentElement.scrollHeight - innerHeight;
+  const maxScroll = () => pageMax || (document.documentElement.scrollHeight - innerHeight);
   function smoothTick(now) {
     // outra coisa moveu a página (barra de rolagem, link, busca): a rolagem suave cede o lugar
-    if (sLast && Math.abs(scrollY - sC) > 3) { sRaf = null; sLast = 0; return; }
+    if (sLast && Math.abs(scrollPos - sC) > 3) { sRaf = null; sLast = 0; return; }
     const dt = Math.min(100, now - (sLast || now));
     sLast = now;
     sC += (sT - sC) * (1 - Math.pow(1 - 0.2, dt / 16.667));
@@ -956,7 +881,7 @@
     scrollTo({ top: sC, behavior: 'instant' });
   }
   function stopSmooth() { if (sRaf) { cancelAnimationFrame(sRaf); sRaf = null; sLast = 0; } }
-  addEventListener('wheel', e => {
+  const onWheel = e => {
     if (!smooth.on || e.ctrlKey || e.defaultPrevented || root.classList.contains('pm-lock')) return;
     if (e.target.closest && e.target.closest('textarea, select')) return;
     if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
@@ -965,13 +890,15 @@
     const unit = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? innerHeight : 1;
     sT = clamp(sT + e.deltaY * unit, 0, maxScroll());
     if (!sRaf) sRaf = requestAnimationFrame(smoothTick);
-  }, { passive: false });
+  };
+  const armWheel = () => idle(() => addEventListener('wheel', onWheel, { passive: false }));
+  if (document.readyState === 'complete') armWheel(); else addEventListener('load', armWheel, { once: true });
   addEventListener('keydown', e => {
     if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(e.key)) stopSmooth();
   });
   addEventListener('pointerdown', stopSmooth, { passive: true });
   function applySmooth() {
-    smooth.on = SMOOTH_Q.matches && !RM.matches;
+    smooth.on = SMOOTH_Q.matches && !RM.matches && !skyLow;
     if (!smooth.on) stopSmooth();
   }
   SMOOTH_Q.addEventListener('change', applySmooth);
@@ -1075,21 +1002,21 @@
   /* ---------- links do menu: a página desce devagar até a seção ---------- */
   let tweenRaf = null;
   const stopTween = () => { if (tweenRaf) { cancelAnimationFrame(tweenRaf); tweenRaf = null; } };
-  function tweenScroll(to) {
+  function tweenScroll(target) {
     stopSmooth();
     stopTween();
-    to = clamp(to, 0, maxScroll());
-    if (RM.matches) { scrollTo({ top: to, behavior: 'instant' }); return; }
-    const from = scrollY, dist = to - from;
-    const dur = clamp(Math.abs(dist) * 0.16, 700, 1900);
+    const aim = () => clamp(typeof target === 'function' ? target() : target, 0, maxScroll());
+    if (RM.matches) { scrollTo({ top: aim(), behavior: 'instant' }); requestAnimationFrame(() => scrollTo({ top: aim(), behavior: 'instant' })); return; }
+    const from = scrollY;
+    const dur = clamp(Math.abs(aim() - from) * 0.16, 700, 1900);
     const t0 = performance.now();
     const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
     let set = from;
     const step = now => {
       // outra coisa moveu a página (barra de rolagem, busca, outro link): a descida cede o lugar
-      if (Math.abs(scrollY - set) > 3) { tweenRaf = null; return; }
+      if (Math.abs(scrollPos - set) > 3) { tweenRaf = null; return; }
       const t = clamp((now - t0) / dur, 0, 1);
-      set = from + dist * ease(t);
+      set = from + (aim() - from) * ease(t);
       scrollTo({ top: set, behavior: 'instant' });
       tweenRaf = t < 1 ? requestAnimationFrame(step) : null;
     };
@@ -1103,7 +1030,7 @@
     if (!el) return;
     e.preventDefault();
     const margin = parseFloat(getComputedStyle(el).scrollMarginTop) || 0;
-    tweenScroll(id === '#topo' ? 0 : el.getBoundingClientRect().top + scrollY - margin);
+    tweenScroll(id === '#topo' ? 0 : () => el.getBoundingClientRect().top + scrollY - margin);
     history.replaceState(null, '', id);
   });
   addEventListener('wheel', stopTween, { passive: true });
