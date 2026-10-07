@@ -54,8 +54,25 @@
 
   /* ---------- ponteiro: mouse, caneta e toque ---------- */
   const FINE = matchMedia('(hover: hover) and (pointer: fine)');
+  // efeitos que seguem o mouse: no máximo 60 atualizações por segundo, todas no mesmo quadro,
+  // mesmo em monitor de 120 ou 144Hz (o movimento continua liso e a página trabalha menos)
+  const f60 = new Set();
+  let f60Due = 0, f60Timer = null, f60Raf = null;
+  function run60(now) {
+    f60Raf = null;
+    f60Due = now + 15;
+    const list = [...f60];
+    f60.clear();
+    list.forEach(fn => fn(now));
+  }
+  function frame60(fn) {
+    f60.add(fn);
+    if (f60Raf || f60Timer) return;
+    const wait = f60Due - performance.now();
+    if (wait > 1) f60Timer = setTimeout(() => { f60Timer = null; f60Raf = requestAnimationFrame(run60); }, wait);
+    else f60Raf = requestAnimationFrame(run60);
+  }
   const ptr = { tx: VW / 2, ty: VH * 0.3, x: VW / 2, y: VH * 0.3, cx: 0, cy: 0, tcx: 0, tcy: 0, drag: 0, dragging: false, raf: null, last: 0 };
-  const smooth = { on: false };
 
   /* ---------- hero: as camadas se montam sozinhas, em loop, como um vídeo ---------- */
   const hero = $('.hero');
@@ -619,9 +636,9 @@
     const rest = Math.abs(ptr.tx - ptr.x) < 0.5 && Math.abs(ptr.ty - ptr.y) < 0.5 &&
       Math.abs(ptr.tcx - ptr.cx) < 0.002 && Math.abs(ptr.tcy - ptr.cy) < 0.002 &&
       Math.abs((ptr.dragging ? 1 : 0) - ptr.drag) < 0.002;
-    if (rest) { ptr.raf = null; ptr.last = 0; } else ptr.raf = requestAnimationFrame(ptrTick);
+    if (rest) { ptr.raf = null; ptr.last = 0; } else frame60(ptrTick);
   }
-  const ptrKick = () => { if (!ptr.raf) ptr.raf = requestAnimationFrame(ptrTick); };
+  const ptrKick = () => { if (!ptr.raf) { ptr.raf = true; frame60(ptrTick); } };
   function ptrAt(e) {
     if (RM.matches) return;
     ptr.tx = e.clientX;
@@ -659,28 +676,44 @@
   addEventListener('touchend', () => { ptr.tcx = ptr.tcy = 0; ptrKick(); }, { passive: true });
 
   /* ---------- brilho nos cards que segue o cursor, a caneta ou o dedo ---------- */
+  // o brilho é uma luz pronta que só desliza por cima do card: a placa de vídeo move,
+  // e nada dentro do card é recalculado ou redesenhado a cada movimento do mouse
+  const glowBox = cls => {
+    const box = document.createElement('i');
+    box.className = cls;
+    box.setAttribute('aria-hidden', 'true');
+    box.appendChild(document.createElement('i'));
+    return box;
+  };
   $$('.spot').forEach(el => {
-    let raf = null, mx = 0, my = 0, off = null;
-    const paint = () => { raf = null; el.style.setProperty('--mx', mx + 'px'); el.style.setProperty('--my', my + 'px'); };
+    const boxes = [glowBox('spot-ring')];
+    if (el.classList.contains('spot-fill')) boxes.push(glowBox('spot-pool'));
+    boxes.forEach(bx => el.appendChild(bx));
+    const lights = boxes.map(bx => bx.firstChild);
+    let raf = null, mx = 0, my = 0, off = null, box = null, sy = 0;
+    const paint = () => { raf = null; const t = `translate3d(${mx}px,${my}px,0)`; lights.forEach(l => { l.style.transform = t; }); };
+    // a posição do card é lida uma vez ao entrar (e corrigida pela rolagem), não a cada movimento
     const at = e => {
-      const r = el.getBoundingClientRect();
-      mx = Math.round(e.clientX - r.left);
-      my = Math.round(e.clientY - r.top);
-      if (!raf) raf = requestAnimationFrame(paint);
+      if (!box) { box = el.getBoundingClientRect(); sy = scrollPos; }
+      mx = Math.round(e.clientX - box.left);
+      my = Math.round(e.clientY - (box.top - (scrollPos - sy)));
+      if (!raf) { raf = true; frame60(paint); }
     };
-    el.addEventListener('pointerenter', e => { if (e.pointerType === 'touch') return; at(e); el.classList.add('lit'); });
+    const out = () => { el.classList.remove('lit'); box = null; };
+    el.addEventListener('pointerenter', e => { if (e.pointerType === 'touch') return; box = null; at(e); el.classList.add('lit'); });
     el.addEventListener('pointermove', e => { if (e.pointerType !== 'touch') at(e); });
-    el.addEventListener('pointerleave', e => { if (e.pointerType !== 'touch') el.classList.remove('lit'); });
+    el.addEventListener('pointerleave', e => { if (e.pointerType !== 'touch') out(); });
     el.addEventListener('pointerdown', e => {
       if (e.pointerType !== 'touch') return;
       clearTimeout(off);
+      box = null;
       at(e);
       el.classList.add('lit');
     });
     const release = e => {
       if (e.pointerType !== 'touch') return;
       clearTimeout(off);
-      off = setTimeout(() => el.classList.remove('lit'), 700);
+      off = setTimeout(out, 700);
     };
     el.addEventListener('pointerup', release);
     el.addEventListener('pointercancel', release);
@@ -704,10 +737,10 @@
       const ny = (e.clientY - top) / box.height - 0.5;
       ry = clamp(nx, -0.5, 0.5) * max * 2;
       rx = -clamp(ny, -0.5, 0.5) * max * 2;
-      if (!raf) raf = requestAnimationFrame(paint);
+      if (!raf) { raf = true; frame60(paint); }
     });
     el.addEventListener('pointerleave', () => {
-      if (raf) { cancelAnimationFrame(raf); raf = null; }
+      if (raf) { f60.delete(paint); raf = null; }
       box = null;
       el.classList.remove('tilting');
       el.style.transform = '';
@@ -716,14 +749,22 @@
 
   /* ---------- botões principais que puxam de leve o cursor ---------- */
   $$('.magnet').forEach(el => {
+    let r = null, raf = null, tx = 0, ty = 0;
+    const paint = () => { raf = null; el.style.transform = `translate(${tx.toFixed(1)}px,${ty.toFixed(1)}px)`; };
+    el.addEventListener('pointerenter', () => { r = null; });
     el.addEventListener('pointermove', e => {
       if (e.pointerType === 'touch' || RM.matches || !FINE.matches) return;
-      const r = el.getBoundingClientRect();
-      const dx = e.clientX - (r.left + r.width / 2);
-      const dy = e.clientY - (r.top + r.height / 2);
-      el.style.transform = `translate(${clamp(dx * 0.18, -9, 9).toFixed(1)}px,${clamp(dy * 0.3, -7, 7).toFixed(1)}px)`;
+      if (!r) { r = el.getBoundingClientRect(); el.classList.add('pulling'); }
+      tx = clamp((e.clientX - (r.left + r.width / 2)) * 0.18, -9, 9);
+      ty = clamp((e.clientY - (r.top + r.height / 2)) * 0.3, -7, 7);
+      if (!raf) { raf = true; frame60(paint); }
     });
-    el.addEventListener('pointerleave', () => { el.style.transform = ''; });
+    el.addEventListener('pointerleave', () => {
+      if (raf) { f60.delete(paint); raf = null; }
+      r = null;
+      el.style.transform = '';
+      el.classList.remove('pulling');
+    });
   });
 
   /* ---------- profundidade no scroll e fundo que muda de tom pela página ---------- */
@@ -760,8 +801,8 @@
   let skyLow = false, skyPost = null, skyQueue = [];
   const skyMsg = m => { if (skyPost) skyPost(m); else skyQueue.push(m); };
   function skyReady(post) { skyPost = post; skyQueue.forEach(post); skyQueue = []; }
-  // aparelho lento: o céu avisa, e a rolagem suave da roda dá lugar à nativa, que é mais leve
-  function skyNotify(d) { if (d && d.t === 'low' && !skyLow) { skyLow = true; applySmooth(); } }
+  // aparelho lento: o céu avisa e se adapta sozinho
+  function skyNotify(d) { if (d && d.t === 'low') skyLow = true; }
   function skyOnPage(cv) {
     const s = document.createElement('script');
     s.src = SKY_URL;
@@ -893,42 +934,9 @@
   nearIO.observe(contato);
   nearIO.observe(stepsWrap);
 
-  /* ---------- rolagem suave na roda do mouse (toque, teclado e barra seguem nativos) ---------- */
-  const SMOOTH_Q = matchMedia('(hover: hover) and (pointer: fine)');
-  let sT = 0, sC = 0, sRaf = null, sLast = 0;
+  /* ---------- rolagem: a do próprio navegador, em qualquer aparelho (roda, toque, teclado e barra) ---------- */
+  // ela corre fora do script, então continua lisa mesmo com a página ocupada
   const maxScroll = () => pageMax || (document.documentElement.scrollHeight - innerHeight);
-  function smoothTick(now) {
-    // outra coisa moveu a página (barra de rolagem, link, busca): a rolagem suave cede o lugar
-    if (sLast && Math.abs(scrollPos - sC) > 3) { sRaf = null; sLast = 0; return; }
-    const dt = Math.min(100, now - (sLast || now));
-    sLast = now;
-    sC += (sT - sC) * (1 - Math.pow(1 - 0.2, dt / 16.667));
-    if (Math.abs(sT - sC) < 0.5) { sC = sT; sRaf = null; sLast = 0; } else sRaf = requestAnimationFrame(smoothTick);
-    scrollTo({ top: sC, behavior: 'instant' });
-  }
-  function stopSmooth() { if (sRaf) { cancelAnimationFrame(sRaf); sRaf = null; sLast = 0; } }
-  const onWheel = e => {
-    if (!smooth.on || e.ctrlKey || e.defaultPrevented || root.classList.contains('pm-lock')) return;
-    if (e.target.closest && e.target.closest('textarea, select')) return;
-    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
-    e.preventDefault();
-    if (!sRaf) sT = sC = scrollY;
-    const unit = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? innerHeight : 1;
-    sT = clamp(sT + e.deltaY * unit, 0, maxScroll());
-    if (!sRaf) sRaf = requestAnimationFrame(smoothTick);
-  };
-  const armWheel = () => idle(() => addEventListener('wheel', onWheel, { passive: false }));
-  if (document.readyState === 'complete') armWheel(); else addEventListener('load', armWheel, { once: true });
-  addEventListener('keydown', e => {
-    if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(e.key)) stopSmooth();
-  });
-  addEventListener('pointerdown', stopSmooth, { passive: true });
-  function applySmooth() {
-    smooth.on = SMOOTH_Q.matches && !RM.matches && !skyLow;
-    if (!smooth.on) stopSmooth();
-  }
-  SMOOTH_Q.addEventListener('change', applySmooth);
-  applySmooth();
 
   /* ---------- ondulação ao clicar em botões, chips, dúvidas e menu ---------- */
   const RIPPLE = '.btn, .chips span, .qa button, .menu-btn, .menu a, .work-open, .pm-close';
@@ -975,7 +983,6 @@
     const gap = innerWidth - document.documentElement.clientWidth;
     document.documentElement.style.paddingRight = gap ? gap + 'px' : '';
     root.classList.add('pm-lock');
-    stopSmooth();
     pmPanel.classList.remove('anim');
     pm.classList.add('open');
     if (!RM.matches) {
@@ -1029,7 +1036,6 @@
   let tweenRaf = null;
   const stopTween = () => { if (tweenRaf) { cancelAnimationFrame(tweenRaf); tweenRaf = null; } };
   function tweenScroll(target) {
-    stopSmooth();
     stopTween();
     const aim = () => clamp(typeof target === 'function' ? target() : target, 0, maxScroll());
     if (RM.matches) { scrollTo({ top: aim(), behavior: 'instant' }); requestAnimationFrame(() => scrollTo({ top: aim(), behavior: 'instant' })); return; }
@@ -1040,7 +1046,7 @@
     let set = from;
     const step = now => {
       // outra coisa moveu a página (barra de rolagem, busca, outro link): a descida cede o lugar
-      if (Math.abs(scrollPos - set) > 3) { tweenRaf = null; return; }
+      if (Math.abs(scrollY - set) > 3) { tweenRaf = null; return; }
       const t = clamp((now - t0) / dur, 0, 1);
       set = from + (aim() - from) * ease(t);
       scrollTo({ top: set, behavior: 'instant' });
@@ -1084,7 +1090,6 @@
     queueDepth();
   }
   RM.addEventListener('change', e => {
-    applySmooth();
     if (e.matches) pinToFinalStates();
     else unpinFinalStates();
   });

@@ -77,6 +77,7 @@ body.paused *,body.paused *::before,body.paused *::after{animation-play-state:pa
   .btn:hover{background:var(--accent-hover);color:#fff}
   .btn:hover::after{opacity:1}
   .btn:not(.magnet):hover{transform:translateY(-2px)}
+.magnet.pulling{will-change:transform}
   .btn-ghost:hover{background:rgba(27,107,255,.12);border-color:var(--accent-text)}
 }
 .chip{background:rgba(5,7,14,.86);border:1px solid rgba(86,100,138,.45);border-radius:10px}
@@ -86,9 +87,14 @@ body.paused *,body.paused *::before,body.paused *::after{animation-play-state:pa
 
 /* brilho que segue o cursor (ou o toque) nas bordas e superfícies */
 .spot{position:relative}
-.spot::after{content:"";position:absolute;inset:0;z-index:3;border-radius:inherit;padding:1px;pointer-events:none;background:radial-gradient(260px circle at var(--mx,50%) var(--my,50%),rgba(150,190,255,.6),rgba(150,190,255,0) 70%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);opacity:0;transition:opacity .6s var(--ease-soft)}
-.spot-fill::before{content:"";position:absolute;inset:0;z-index:0;border-radius:inherit;pointer-events:none;background:radial-gradient(340px circle at var(--mx,50%) var(--my,50%),rgba(70,130,255,.10),rgba(70,130,255,0) 70%);opacity:0;transition:opacity .6s var(--ease-soft)}
-.spot.lit::after,.spot-fill.lit::before{opacity:1}
+.spot>i.spot-ring{position:absolute;inset:0;z-index:3;border-radius:inherit;padding:1px;pointer-events:none;overflow:hidden;-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);opacity:0;transition:opacity .6s var(--ease-soft)}
+.spot>i.spot-pool{position:absolute;inset:0;z-index:0;border-radius:inherit;pointer-events:none;overflow:hidden;opacity:0;transition:opacity .6s var(--ease-soft)}
+/* a luz em si: um círculo pronto que desliza com o mouse (antes o degradê era redesenhado a cada movimento) */
+.spot>i>i{position:absolute;left:0;top:0;border-radius:50%;pointer-events:none;transform:translate3d(-999px,-999px,0)}
+.spot>i.spot-ring>i{width:520px;height:520px;margin:-260px 0 0 -260px;background:radial-gradient(260px circle at center,rgba(150,190,255,.6),rgba(150,190,255,0) 70%)}
+.spot>i.spot-pool>i{width:680px;height:680px;margin:-340px 0 0 -340px;background:radial-gradient(340px circle at center,rgba(70,130,255,.10),rgba(70,130,255,0) 70%)}
+.spot.lit>i>i{will-change:transform}
+.spot.lit>i.spot-ring,.spot.lit>i.spot-pool{opacity:1}
 .tilt{transition:transform .9s var(--ease-out);transform-style:preserve-3d}
 .tilt.tilting{transition:transform .25s var(--ease-soft)}
 

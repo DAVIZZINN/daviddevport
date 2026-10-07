@@ -30,9 +30,9 @@
     const S = { w: 0, h: 0, y: 0, max: 0, px: 0, py: 0, cx: 0, cy: 0, drag: 0, on: false, alpha: 1, coarse: false, run: false };
     let parts = [], tiles = [], cons = [];
     const shocks = [], meteors = [];
-    let rafId = null, last = 0, clock = 0, frame = 0, acc = 0, vel = 0, skyY = null, lastSY = null;
-    // se o aparelho estiver lento, o céu se adapta: menos estrelas e meio ritmo de atualização
-    let ema = 16.7, low = false, skip = false, busyUntil = 0;
+    let rafId = null, last = 0, clock = 0, acc = 0, vel = 0, skyY = null, lastSY = null;
+    // se o aparelho estiver lento, o céu se adapta: menos estrelas
+    let ema = 0, low = false, busyUntil = 0;
     // com a pessoa parada, o céu desenha 1 a cada 3 quadros; ao mexer o mouse, rolar ou tocar, volta ao ritmo cheio
     const wake = () => { busyUntil = performance.now() + 1500; };
 
@@ -100,17 +100,13 @@
     }
 
     function tick(now) {
-      frame++;
       const busy = now < busyUntil || shocks.length > 0 || meteors.length > 0 || Math.abs(vel) > 0.5;
-      if (!busy && frame % 3 !== 0) { rafId = raf(tick); return; }
-      if ((low || S.coarse) && busy) {
-        skip = !skip;
-        if (skip) { rafId = raf(tick); return; }
-      }
+      // ritmo medido no relógio, igual em qualquer tela (60, 120 ou 144Hz):
+      // até 30 desenhos por segundo com movimento e 20 com a pessoa parada
+      if (last && now - last < (busy ? 30 : 46)) { rafId = raf(tick); return; }
+      const t0 = performance.now();
       const dt = Math.min(50, now - (last || now));
       last = now;
-      if (busy) ema = ema * 0.95 + dt * 0.05;
-      if (!low && clock > 3000 && ema > 26) { low = true; parts.length = Math.round(parts.length * 0.6); notify({ t: 'low' }); }
       clock += dt;
       const f = dt / 16.667;
       const SW = S.w, SH = S.h, sAlpha = S.alpha;
@@ -262,6 +258,9 @@
         ctx.stroke();
       }
       ctx.globalAlpha = 1;
+      // aparelho lento (cada desenho passando de 8ms) fica com menos estrelas; no celular, como sempre foi, depois de 3s
+      ema = ema * 0.9 + (performance.now() - t0) * 0.1;
+      if (!low && clock > 3000 && (S.coarse || ema > 8)) { low = true; parts.length = Math.round(parts.length * 0.6); notify({ t: 'low' }); }
       rafId = raf(tick);
     }
 
