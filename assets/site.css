@@ -62,6 +62,9 @@ main{position:relative;z-index:1;outline:none}
 .amb-grain{position:absolute;inset:0;background:radial-gradient(ellipse 125% 95% at 50% 40%,rgba(2,3,8,0) 48%,rgba(2,3,8,.78) 100%)}
 .amb-grain::after{content:"";position:absolute;inset:0;opacity:.05;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .55 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E")}
 body.paused *,body.paused *::before,body.paused *::after{animation-play-state:paused!important}
+/* modo leve (aparelho apertado): os enfeites de fundo param onde estão; a estrela cadente some até o aparelho folgar */
+html.lite .aur,html.lite .float,html.lite .cue i,html.lite .dot::after,html.lite .preview .frame,html.lite .tier-glow,html.lite .ghost,html.lite .ms--anim .ms-art::after,html.lite .ms--anim .ms-art svg{animation-play-state:paused!important}
+html.lite .meteor{animation:none!important;visibility:hidden}
 
 /* ---------- botões ---------- */
 .btn{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:50px;padding:0 24px;border-radius:999px;background:var(--accent);color:#fff;font:600 16.5px/1 var(--f-text);text-decoration:none;border:1px solid transparent;cursor:pointer;transition:background-color .4s var(--ease-out),transform .45s var(--ease-out),border-color .4s var(--ease-out),color .4s var(--ease-out);isolation:isolate;-webkit-user-select:none;user-select:none}

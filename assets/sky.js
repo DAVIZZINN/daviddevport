@@ -27,12 +27,14 @@
     const caf = G.cancelAnimationFrame ? G.cancelAnimationFrame.bind(G) : clearTimeout;
 
     // o que a página conta para o céu: tamanho da tela, rolagem, ponteiro, brilho e se deve desenhar
-    const S = { w: 0, h: 0, y: 0, max: 0, px: 0, py: 0, cx: 0, cy: 0, drag: 0, on: false, alpha: 1, coarse: false, run: false };
+    const S = { w: 0, h: 0, y: 0, max: 0, px: 0, py: 0, cx: 0, cy: 0, drag: 0, on: false, alpha: 1, coarse: false, run: false, lite: false };
     let parts = [], tiles = [], cons = [];
     const shocks = [], meteors = [];
     let rafId = null, last = 0, clock = 0, acc = 0, vel = 0, skyY = null, lastSY = null;
     // se o aparelho estiver lento, o céu se adapta: menos estrelas
     let ema = 0, low = false, busyUntil = 0;
+    // quadros chegando atrasados (jogo ou aba pesada disputando a placa de vídeo): o céu avisa a página
+    let prevNow = 0, late = [], warned = 0;
     // com a pessoa parada, o céu desenha 1 a cada 3 quadros; ao mexer o mouse, rolar ou tocar, volta ao ritmo cheio
     const wake = () => { busyUntil = performance.now() + 1500; };
 
@@ -103,7 +105,15 @@
       const busy = now < busyUntil || shocks.length > 0 || meteors.length > 0 || Math.abs(vel) > 0.5;
       // ritmo medido no relógio, igual em qualquer tela (60, 120 ou 144Hz):
       // até 30 desenhos por segundo com movimento e 20 com a pessoa parada
-      if (last && now - last < (busy ? 30 : 46)) { rafId = raf(tick); return; }
+      // no modo leve (aparelho apertado), 20 com movimento e 11 parado
+      const gap = prevNow ? now - prevNow : 0;
+      prevNow = now;
+      if (gap > 70 && gap < 1000) {
+        late.push(now);
+        late = late.filter(t => now - t < 4000);
+        if (late.length >= 6 && now - warned > 3000) { warned = now; notify({ t: 'strain' }); }
+      }
+      if (last && now - last < (busy ? (S.lite ? 50 : 30) : (S.lite ? 90 : 46))) { rafId = raf(tick); return; }
       const t0 = performance.now();
       const dt = Math.min(50, now - (last || now));
       last = now;
@@ -157,7 +167,9 @@
         }
       }
       ctx.fillStyle = '#DCE8FF';
-      for (const p of parts) {
+      const pn = S.lite ? Math.ceil(parts.length * 0.6) : parts.length;
+      for (let pi = 0; pi < pn; pi++) {
+        const p = parts[pi];
         const hx = SW / 2 + Math.cos(p.ang + theta) * p.rad;
         const hy = SH / 2 + Math.sin(p.ang + theta) * p.rad * 0.86;
         let ax = (hx - p.x) * 0.012, ay = (hy - p.y) * 0.012;
@@ -264,7 +276,7 @@
       rafId = raf(tick);
     }
 
-    function start() { S.run = true; if (rafId === null && S.w) { last = 0; rafId = raf(tick); } }
+    function start() { S.run = true; if (rafId === null && S.w) { last = 0; prevNow = 0; rafId = raf(tick); } }
     function stop() { S.run = false; if (rafId !== null) { caf(rafId); rafId = null; } ctx.clearRect(0, 0, S.w, S.h); }
 
     function msg(m) {
@@ -275,6 +287,7 @@
         case 'shock': shocks.push({ x: m.x, y: m.y, t0: performance.now() }); if (shocks.length > 4) shocks.shift(); wake(); break;
         case 'alpha': S.alpha = m.a; break;
         case 'coarse': S.coarse = m.on; break;
+        case 'lite': S.lite = m.on; break;
         case 'run': if (m.on) start(); else stop(); break;
       }
     }

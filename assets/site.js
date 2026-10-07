@@ -57,10 +57,11 @@
   // efeitos que seguem o mouse: no máximo 60 atualizações por segundo, todas no mesmo quadro,
   // mesmo em monitor de 120 ou 144Hz (o movimento continua liso e a página trabalha menos)
   const f60 = new Set();
+  let lite = false;
   let f60Due = 0, f60Timer = null, f60Raf = null;
   function run60(now) {
     f60Raf = null;
-    f60Due = now + 15;
+    f60Due = now + (lite ? 32 : 15);
     const list = [...f60];
     f60.clear();
     list.forEach(fn => fn(now));
@@ -802,7 +803,11 @@
   const skyMsg = m => { if (skyPost) skyPost(m); else skyQueue.push(m); };
   function skyReady(post) { skyPost = post; skyQueue.forEach(post); skyQueue = []; }
   // aparelho lento: o céu avisa e se adapta sozinho
-  function skyNotify(d) { if (d && d.t === 'low') skyLow = true; }
+  function skyNotify(d) {
+    if (!d) return;
+    if (d.t === 'low') skyLow = true;
+    if (d.t === 'strain') strain(3);
+  }
   function skyOnPage(cv) {
     const s = document.createElement('script');
     s.src = SKY_URL;
@@ -1094,6 +1099,52 @@
     else unpinFinalStates();
   });
   if (RM.matches) pinToFinalStates();
+
+  /* ---------- modo leve automático: o site se defende quando o aparelho está apertado ---------- */
+  // outra janela ou aba pesada do lado, jogo aberto, aparelho fraco, economia de dados ligada ou a página engasgando:
+  // os enfeites de fundo descansam (aurora, estrela cadente, pulsos e flutuações), o céu desenha mais devagar
+  // e o mouse atualiza a 30 por segundo. O conteúdo e o loop das camadas continuam iguais.
+  // Quando o aparelho fica livre, tudo volta sozinho.
+  const LITE = {
+    // começa como "com foco": navegadores dentro de apps (Instagram, por exemplo) podem abrir sem avisar o foco;
+    // o modo leve por foco liga só quando a janela realmente perde o foco
+    focus: false,
+    data: !!(navigator.connection && navigator.connection.saveData),
+    // aparelho bem fraco (até 2GB de memória ou até 2 núcleos) já abre leve
+    weak: (navigator.deviceMemory > 0 && navigator.deviceMemory <= 2) || (navigator.hardwareConcurrency > 0 && navigator.hardwareConcurrency <= 2),
+    until: 0
+  };
+  let liteTimer = null, hits = [];
+  function liteCheck() {
+    const on = !RM.matches && (LITE.focus || LITE.data || LITE.weak || performance.now() < LITE.until);
+    if (on === lite) return;
+    lite = on;
+    root.classList.toggle('lite', on);
+    skyMsg({ t: 'lite', on });
+  }
+  // cada engasgo conta; 3 em 5 segundos ligam o modo leve por 10 segundos (renovados enquanto continuar engasgando)
+  function strain(n) {
+    const now = performance.now();
+    hits = hits.filter(t => now - t < 5000);
+    for (let i = 0; i < n; i++) hits.push(now);
+    if (hits.length < 3) return;
+    LITE.until = now + 10000;
+    liteCheck();
+    clearTimeout(liteTimer);
+    liteTimer = setTimeout(liteCheck, 10050);
+  }
+  try {
+    const kinds = PerformanceObserver.supportedEntryTypes || [];
+    const type = kinds.includes('long-animation-frame') ? 'long-animation-frame' : kinds.includes('longtask') ? 'longtask' : '';
+    if (type) new PerformanceObserver(list => list.getEntries().forEach(e => { if (e.duration > 90) strain(1); })).observe({ type });
+  } catch (e) { /* navegador sem esse aviso: os outros sinais continuam valendo */ }
+  addEventListener('blur', () => { LITE.focus = true; liteCheck(); });
+  addEventListener('focus', () => { LITE.focus = false; liteCheck(); });
+  if (navigator.connection && navigator.connection.addEventListener) {
+    navigator.connection.addEventListener('change', () => { LITE.data = !!navigator.connection.saveData; liteCheck(); });
+  }
+  RM.addEventListener('change', liteCheck);
+  liteCheck();
 
   applyHeroMode();
 })();
